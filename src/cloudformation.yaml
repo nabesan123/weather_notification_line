@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  S3Bucket:
+    Type: String
+    Description: S3 bucket where Lambda function code is stored
+
+Resources:
+  WeatherNotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: WeatherNotificationFunction
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref WeatherNotificationTable
+          LINE_ACCESS_TOKEN_SSM: '/line/access_token'
+          OPENWEATHERMAP_API_KEY_SSM: '/openweathermap/api_key'
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: weather_notification_function.zip
+
+  LineWebhookFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: LineWebhookFunction
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref WeatherNotificationTable
+          LINE_ACCESS_TOKEN_SSM: '/line/access_token'
+          OPENWEATHERMAP_API_KEY_SSM: '/openweathermap/api_key'
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: line_webhook_function.zip
+
+  WeatherNotificationTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: WeatherNotificationTable
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaDynamoDBPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                  - dynamodb:PutItem
+                Resource: 
+                  - !GetAtt WeatherNotificationTable.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: "arn:aws:ssm:*:*:parameter/line/access_token"
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: "arn:aws:ssm:*:*:parameter/openweathermap/api_key"
+
+  WeatherNotificationEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: WeatherNotificationEventRule
+      ScheduleExpression: cron(0 0 * * ? *) # 毎日0時に実行
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt WeatherNotificationFunction.Arn
+          Id: WeatherNotificationFunctionTarget
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WeatherNotificationFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt WeatherNotificationEventRule.Arn
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: LineWebhookApi
+
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: webhook
+      RestApiId: !Ref ApiGateway
+
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LineWebhookFunction.Arn}/invocations
+
+  PermissionForApiGatewayToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LineWebhookFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiGatewayMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: prod
