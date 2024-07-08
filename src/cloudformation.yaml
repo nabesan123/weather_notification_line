@@ -118,6 +118,14 @@ Resources:
       PathPart: webhook
       RestApiId: !Ref ApiGateway
 
+  ApiGatewayRequestValidator:
+    Type: AWS::ApiGateway::RequestValidator
+    Properties:
+      Name: ValidateHeaders
+      RestApiId: !Ref ApiGateway
+      ValidateRequestBody: false
+      ValidateRequestParameters: true
+
   ApiGatewayMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -125,6 +133,9 @@ Resources:
       ResourceId: !Ref ApiGatewayResource
       HttpMethod: POST
       AuthorizationType: NONE
+      RequestValidatorId: !Ref ApiGatewayRequestValidator
+      RequestParameters:
+        method.request.header.x-line-signature: true
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
